@@ -1,0 +1,205 @@
+library(tidyverse)
+library(tidymodels)
+library(tidytext)
+library(textrecipes)
+text <- read_csv('Youtube-Spam-Dataset.csv')
+head(text)
+str(text)
+descr::freq(text$VIDEO_NAME)
+text2 <- text |> select(CONTENT,CLASS)
+skimr::skim(text)
+colSums(is.na(text))
+#type, description 사용
+text %>%
+  slice_sample(n = 10) %>%
+  pull(CONTENT)
+text |> 
+  unnest_tokens(word, CONTENT) |>  #토큰화 
+  anti_join(get_stopwords()) |> #불용어제거 
+  count(CLASS,word,sort=T) |> 
+  group_by(CLASS) |> 
+  slice_max(n,n=15) |> 
+  ungroup() |> 
+  mutate(word=reorder_within(x= word,by = n, within = CLASS)) |> 
+  ggplot(aes(x=n,y=word,fill=CLASS))+
+  scale_y_reordered()+
+  geom_col(show.legend = FALSE, alpha = 0.8)+facet_wrap(~CLASS,scales='free')
+#check느 ㄴ너무 많고 http는 없어도 되지 않을까까
+
+text2_1 <- text |> 
+  unnest_tokens(word, CONTENT) |> 
+  anti_join(get_stopwords()) |> 
+  count(CLASS,word,sort=T)
+text2_2 <- text |> 
+  unnest_tokens(word,CONTENT) |> 
+  anti_join(get_stopwords()) |> 
+  filter(
+    str_detect(word, pattern = "^[a-zA-Z]{3,}$"),
+    !str_detect(word, pattern = "^[0-9]")) |> count(CLASS,word,sort=T)
+
+text2_2 |> group_by(CLASS) |> 
+  slice_max(n,n=15) |> 
+  ungroup() |> 
+  mutate(word=reorder_within(x= word,by = n, within = CLASS)) |> 
+  ggplot(aes(x=n,y=word,fill=CLASS))+
+  scale_y_reordered()+
+  geom_col(show.legend = FALSE, alpha = 0.8)+facet_wrap(~CLASS,scales='free')
+unique(text2_2$word)
+unique(text2_1$word)
+
+
+set.seed(201952026)
+split <- mutate(text, CLASS=as.factor(CLASS)) |> initial_split(text, prop=0.7,strata=CLASS)
+train <- training(split)
+test <- testing(split)
+descr::freq(text2$CLASS,plot=F)
+descr::freq(train$CLASS,plot=F)
+descr::freq(test$CLASS,plot=F)
+dim(train)
+dim(test)
+logit <- logistic_reg() |> set_engine('glm')
+lasso <- logistic_reg(mixture=1,penalty=tune()) |> set_engine('glmnet')
+rec_norm <- recipe(CLASS~CONTENT,train) |> 
+  step_tokenize(CONTENT) |> 
+  step_stopwords(CONTENT) |>  
+  step_tokenfilter(CONTENT,max_tokens=1000) |> 
+  step_tfidf(CONTENT) |> 
+  step_normalize(all_numeric_predictors()) |> 
+  step_pca(starts_with('tfidf'),num_comp=50)
+
+remove <- function(x) {
+  !grepl("^[0-9]", x) & !grepl("^[a-zA-Z]{1,2}$",x)
+}
+
+rec <- recipe(CLASS ~ CONTENT, train) |>
+  step_tokenize(CONTENT) |>
+  step_stopwords(CONTENT) |>
+  step_tokenfilter(CONTENT,filter_fun = remove) |> 
+  step_tokenfilter(CONTENT, max_tokens=500) |> 
+  step_tfidf(CONTENT) |>
+  step_normalize(all_numeric_predictors()) |> 
+  step_pca(starts_with('tfidf'),num_comp = tune())
+
+
+pre_you <- prep(rec)
+baked <- bake(pre_you,train)
+baked 
+mutate(CONTENT=as.character(CONTENT)) |>  unnest_tokens(word, CONTENT) |> 
+  count(CLASS,word,sort=T) |> group_by(CLASS) |> 
+  slice_max(n,n=15) |> 
+  ungroup() |> 
+  mutate(word=reorder_within(x= word,by = n, within = CLASS)) |> 
+  ggplot(aes(x=n,y=word,fill=CLASS))+
+  scale_y_reordered()+
+  geom_col(show.legend = FALSE, alpha = 0.8)+facet_wrap(~CLASS,scales='free')
+
+
+
+
+pre_you1 <- rec |> prep()
+baked1 <- bake(pre_you1,train)
+baked1
+
+
+wflow_logit <- workflow() |> add_model(logit) |> add_recipe(rec)
+wflow_lasso <- workflow() |> add_model(lasso) |> add_recipe(rec)
+fit1 <- fit(wflow_logit,train)
+pred <- augment(fit1,test)
+pred |> conf_mat(.pred_class,CLASS) |> summary()
+
+wflow_logit2 <- workflow() |> add_model(logit) |> add_recipe(rec_norm)
+fit2 <- fit(wflow_logit2,train)
+pred2 <- augment(fit2,test)
+pred2 |> conf_mat(.pred_class,CLASS) |> summary()
+
+set.seed(201952026)
+vfold <- vfold_cv(train,v=10,strata=CLASS)
+option <- control_resamples(save_workflow = T,
+                            event_level = 'second')
+t_metric <- metric_set(accuracy,sens,spec,roc_auc)
+pca_grid <- grid_regular(num_comp(range = c(2, 50)),levels=20)
+pca_tune <- tune_grid(wflow_logit,resamples=vfold,grid=pca_grid, control=option, metrics=t_metric)
+autoplot(pca_tune)
+collect_metrics(pca_tune) |>filter(.metric=='sens') |>  arrange(desc(mean)) |> print(n=20)
+pca_lasso_grid <- grid_regular(num_comp(range = c(2, 50)),
+                               penalty(range=c(0.1,0.2),trans=NULL),levels=5)
+pca_lasso_tune <- tune_grid(wflow_lasso,resamples=vfold,grid=pca_lasso_grid, control=option, metrics=t_metric)
+autoplot(pca_lasso_tune)
+collect_metrics(pca_lasso_tune) |> filter(.metric=='sens' & mean<1) |> arrange(desc(mean))
+
+#최종레시피
+rec_pca37 <- recipe(CLASS ~ CONTENT, train) |>
+  step_tokenize(CONTENT) |>
+  step_stopwords(CONTENT) |>
+  step_tokenfilter(CONTENT,filter_fun = remove) |> 
+  step_tokenfilter(CONTENT, max_tokens=500) |> 
+  step_tfidf(CONTENT) |>
+  step_normalize(all_numeric_predictors()) |> 
+  step_pca(starts_with('tfidf'),num_comp = 37)
+
+rec_pca14 <- recipe(CLASS ~ CONTENT, train) |>
+  step_tokenize(CONTENT) |>
+  step_stopwords(CONTENT) |>
+  step_tokenfilter(CONTENT,filter_fun = remove) |> 
+  step_tokenfilter(CONTENT, max_tokens=500) |> 
+  step_tfidf(CONTENT) |>
+  step_normalize(all_numeric_predictors()) |> 
+  step_pca(starts_with('tfidf'),num_comp = 14)
+
+lasso_penalty <- logistic_reg(mixture = 1, penalty=0.188) |> set_engine('glmnet')
+
+rec.list <- list(pca37 = rec_pca37,
+                 pca14 = rec_pca14)
+model.list <- list(logit = logit,
+                   lasso = lasso_penalty)
+best_model <- workflow_set(rec.list, model.list, cross=F) |> 
+  workflow_map(resamples=vfold, control=option, metrics=t_metric)
+best_model
+autoplot(best_model,type='wflow_id')
+rank_results(best_model)
+
+best_fit <- fit_best(best_model)
+pred <- augment(best_fit, test)
+pred |> conf_mat(.pred_class,CLASS) |> summary(event_level='second')
+roc_curve(pred,.pred_1,truth=CLASS,event_level='second') |> autoplot()
+roc_auc(pred,.pred_1,truth=CLASS,event_level='second')
+
+
+#번외
+svm <- svm_rbf(cost=tune()) |> set_engine('kernlab') |> set_mode('classification')
+wflow_svm <- workflow() |> add_model(svm) |> add_recipe(rec)
+set.seed(1234)
+svm_grid <- grid_regular(num_comp(range=c(10,50)),
+                         cost(range=c(0,3),trans=NULL),levels=5)
+svm_tune <- tune_grid(wflow_svm, resamples=vfold, grid=svm_grid, control=option, metrics=t_metric) 
+autoplot(svm_tune)
+collect_metrics(svm_tune) |> filter(num_comp==30)
+select_best(svm_tune, metric='sens')
+
+
+rec_30 <- recipe(CLASS ~ CONTENT, train) |>
+  step_tokenize(CONTENT) |>
+  step_stopwords(CONTENT) |>
+  step_tokenfilter(CONTENT,filter_fun = remove) |> 
+  step_tokenfilter(CONTENT, max_tokens=500) |> 
+  step_tfidf(CONTENT) |>
+  step_normalize(all_numeric_predictors()) |> 
+  step_pca(starts_with('tfidf'),num_comp = 30)
+
+best_svm <- fit_best(svm_tune,metric='sens',control=option)
+fit_svm <- fit(best_svm,train)
+pred <- augment(best_svm,test)
+pred |> conf_mat(.pred_class, CLASS) |> summary(event_level='second')
+pred |> roc_auc(.pred_1, truth=CLASS,event_level='second')
+library(vip)
+best_svm |> extract_fit_parsnip() |> vip()
+fit_svm |> extract_fit_parsnip() %>%
+  tidy() %>%
+  group_by(estimate > 0) %>%
+  slice_max(abs(estimate), n = 10) %>%
+  ungroup() %>%
+  mutate(term = str_remove(term, "tfidf_interaction_")) %>%
+  ggplot(aes(estimate, fct_reorder(term, estimate), fill = estimate > 0)) +
+  geom_col(alpha = 0.8) +
+  scale_fill_discrete(labels = c("people", "computer")) +
+  labs(y = NULL, fill = "More from...")
