@@ -1,15 +1,4 @@
-#https://keras3.posit.co/articles/getting_started.html?_gl=1*63mgyu*_up*MQ..*_ga*OTYzOTE4NzMyLjE3MzQ0MjI3ODk.*_ga_2C0WZ1JHG0*MTczNDQyMjc4OS4xLjEuMTczNDQyMjc5NC4wLjAuMA..*_ga_X64JZVV9NC*MTczNDQyMjc4OS4xLjEuMTczNDQyMjc5NC4wLjAuMA..
-#https://keras3.posit.co/reference/index.html#operations
-#remotes::install_github('rstudio/keras')
-#library(keras)
-#install_keras()
 
-#reticulate::install_python(version='3.10:latest')
-#use_backend('tensorflow')
-
-#library(tensorflow)
-#install_tensorflow()
-#keras3::install_keras(backend='tensorflow')
 
 library(keras3)
 mnist <- dataset_mnist()
